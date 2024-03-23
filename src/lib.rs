@@ -2,8 +2,11 @@ use std::fs;
 use std::path::PathBuf;
 use clap::Parser;
 use serde::de::DeserializeOwned;
+use tracing::debug;
+use tracing_subscriber::{EnvFilter, FmtSubscriber};
 use crate::bing_wall_feed::{BingWallpaperFeed, WALLPAPER_URL_BASE};
 use crate::cmdline::Args;
+use crate::paths::cache_dir;
 use crate::utils::is_cached_file_outdated;
 pub const ONE_DAY_IN_SECS: u64 = 60 * 60 * 24;
 pub mod bing_wall_feed;
@@ -13,12 +16,20 @@ pub mod paths;
 pub const APP_GROUP: &str = "org.tm";
 pub const APP_DIR: &str = "bing-wall-rs";
 
-pub fn app_path() -> PathBuf {
-    PathBuf::from("org.tm/bing-wall-rs")
+/// Sets up simple enviornment based tracing.
+/// DO NOT call from library. Always from bin
+pub fn set_tracing() -> Result<(), anyhow::Error> {
+    let subscriber = FmtSubscriber::builder()
+        .compact()
+        .with_line_number(true)
+        .with_env_filter(EnvFilter::from_default_env())
+        .finish();
+    tracing::subscriber::set_global_default(subscriber)?;
+    Ok(())
 }
 
 pub fn file_in_cache(file_name: &str) -> PathBuf {
-    let mut f = app_path();
+    let mut f = cache_dir();
     f.push(file_name);
     f
 }
@@ -26,8 +37,10 @@ pub fn file_in_cache(file_name: &str) -> PathBuf {
 pub async fn download_file(url: &str, file_path: &PathBuf) -> Result<Vec<u8>, anyhow::Error> {
     if file_path.exists() {
         if !is_cached_file_outdated(ONE_DAY_IN_SECS, file_path) {
+            debug!("recent cache exists, not downloading");
             return Ok(fs::read(file_path)?)
         }
+        debug!("removing old cache {:?}", file_path);
         // old file, remove
         fs::remove_file(file_path)?;
     }
@@ -37,6 +50,7 @@ pub async fn download_file(url: &str, file_path: &PathBuf) -> Result<Vec<u8>, an
 }
 
 pub async fn download_json<T: DeserializeOwned>(url: &str, file_path: &PathBuf) -> Result<T, anyhow::Error> {
+    debug!("{} {:?}", url, file_path);
     let c = download_file(url, file_path).await?;
     let s = String::from_utf8(c)?;
     Ok(serde_json::from_str(&s).unwrap())
@@ -44,7 +58,7 @@ pub async fn download_json<T: DeserializeOwned>(url: &str, file_path: &PathBuf) 
 
 pub async fn parse_bing_feed(args: Args) -> Result<(), anyhow::Error> {
     let url = crate::bing_wall_feed::build_url(&args);
-    let p = PathBuf::from("bing-feed.json");
+    let p = file_in_cache("bing-feed.json");
     let resp: BingWallpaperFeed = download_json(&url, &p).await?;
     let s = args.save_to();
     for image in resp.images.iter() {
@@ -52,6 +66,7 @@ pub async fn parse_bing_feed(args: Args) -> Result<(), anyhow::Error> {
         let file_name = format!("{}-{}", image.startdate, filename_from_img_url(&img_url));
         let mut pp = s.clone();
         pp.push(file_name);
+        debug!("path: {:?}", pp);
         download_file(&img_url, &pp).await.unwrap();
     }
     Ok(())

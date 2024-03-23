@@ -9,7 +9,7 @@ pub struct Args {
     #[arg(short, long)]
     resolution: Option<String>,
 
-    #[arg(short, long, default_value_t=10)]
+    #[arg(short, long, default_value_t=1)]
     n: i32,
 
     #[arg(short, long, default_value_t=0)]
