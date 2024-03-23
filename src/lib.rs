@@ -50,7 +50,7 @@ pub async fn parse_bing_feed(args: Args) -> Result<(), anyhow::Error> {
     for image in resp.images.iter() {
         let img_url = format!("{}{}_{}.jpg", WALLPAPER_URL_BASE, image.urlbase, args.resolution());
         let file_name = format!("{}-{}", image.startdate, filename_from_img_url(&img_url));
-        let mut pp = args.save_to();
+        let mut pp = s.clone();
         pp.push(file_name);
         download_file(&img_url, &pp).await.unwrap();
     }
