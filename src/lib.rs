@@ -2,17 +2,21 @@ use std::fs;
 use std::path::PathBuf;
 use clap::Parser;
 use serde::de::DeserializeOwned;
-use tracing::debug;
+use tokio::task::JoinSet;
+use tracing::{debug, info, trace, warn};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 use crate::bing_wall_feed::{BingWallpaperFeed, WALLPAPER_URL_BASE};
 use crate::cmdline::Args;
 use crate::paths::cache_dir;
 use crate::utils::is_cached_file_outdated;
+
 pub const ONE_DAY_IN_SECS: u64 = 60 * 60 * 24;
+
 pub mod bing_wall_feed;
 pub mod cmdline;
 pub mod utils;
 pub mod paths;
+
 pub const APP_GROUP: &str = "org.tm";
 pub const APP_DIR: &str = "bing-wall-rs";
 
@@ -34,24 +38,25 @@ pub fn file_in_cache(file_name: &str) -> PathBuf {
     f
 }
 
-pub async fn download_file(url: &str, file_path: &PathBuf) -> Result<Vec<u8>, anyhow::Error> {
+pub async fn download_file(url: String, file_path: PathBuf) -> Result<Vec<u8>, anyhow::Error> {
+    trace!("downloading: {} to: {:?}", url, file_path);
     if file_path.exists() {
-        if !is_cached_file_outdated(ONE_DAY_IN_SECS, file_path) {
+        if !is_cached_file_outdated(ONE_DAY_IN_SECS, &file_path) {
             debug!("recent cache exists, not downloading");
-            return Ok(fs::read(file_path)?)
+            return Ok(fs::read(&file_path)?);
         }
         debug!("removing old cache {:?}", file_path);
         // old file, remove
-        fs::remove_file(file_path)?;
+        fs::remove_file(&file_path)?;
     }
     let resp = reqwest::get(url).await?.bytes().await?;
-    fs::write(file_path, &resp)?;
+    fs::write(&file_path, &resp)?;
     Ok(resp.to_vec())
 }
 
 pub async fn download_json<T: DeserializeOwned>(url: &str, file_path: &PathBuf) -> Result<T, anyhow::Error> {
     debug!("{} {:?}", url, file_path);
-    let c = download_file(url, file_path).await?;
+    let c = download_file(url.to_string(), file_path.clone()).await?;
     let s = String::from_utf8(c)?;
     Ok(serde_json::from_str(&s).unwrap())
 }
@@ -61,14 +66,32 @@ pub async fn parse_bing_feed(args: Args) -> Result<(), anyhow::Error> {
     let p = file_in_cache("bing-feed.json");
     let resp: BingWallpaperFeed = download_json(&url, &p).await?;
     let s = args.save_to();
+    let mut hd = JoinSet::new();
     for image in resp.images.iter() {
         let img_url = format!("{}{}_{}.jpg", WALLPAPER_URL_BASE, image.urlbase, args.resolution());
         let file_name = format!("{}-{}", image.startdate, filename_from_img_url(&img_url));
         let mut pp = s.clone();
         pp.push(file_name);
         debug!("path: {:?}", pp);
-        download_file(&img_url, &pp).await.unwrap();
+        hd.spawn(download_file(img_url, pp));
     }
+    let mut good = 0;
+    let mut fail = 0;
+    loop {
+        let rs = hd.join_next().await;
+        if rs.is_none() {
+            break
+        } else {
+            if let Some(Ok(_img)) = rs {
+                info!("Success");
+                good += 1;
+            } else {
+                warn!("Failed to download a image");
+                fail += 1;
+            }
+        }
+    }
+    info!("Download finish, success: {}, failed: {}", good, fail);
     Ok(())
 }
 
