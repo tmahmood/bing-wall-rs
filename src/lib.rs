@@ -57,7 +57,7 @@ pub async fn download_json<T: DeserializeOwned>(url: &str, file_path: &PathBuf) 
     debug!("{} {:?}", url, file_path);
     let c = download_file(url.to_string(), file_path.clone()).await?;
     let s = String::from_utf8(c)?;
-    Ok(serde_json::from_str(&s).unwrap())
+    Ok(serde_json::from_str(&s)?)
 }
 
 pub async fn parse_bing_feed(args: Args) -> Result<(), anyhow::Error> {
